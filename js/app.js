@@ -12,6 +12,8 @@ const LS_ADMIN = "xrpl1_admin";
 const LS_ADMIN_PASS = "xrpl1_admin_pass";
 const LS_DELETED = "xrpl1_deleted";
 const LS_CUSTOM = "xrpl1_custom_members";
+const LS_CLOUD = "xrpl1_cloud";
+const CLOUD_API = "https://api.jsonbin.io/v3";
 
 let currentMemberId = null;
 let anggotaFilter = "";
@@ -207,6 +209,113 @@ function getCustomMembers() {
 
 function saveCustomMembers(list) {
   localStorage.setItem(LS_CUSTOM, JSON.stringify(list));
+}
+
+// ===== SINKRONISASI CLOUD (jsonbin.io) =====
+// Akun yang dibuat admin (Tambah Anggota) disimpan ke bin jsonbin sehingga
+// bisa dipakai login dari perangkat lain. Baca tidak butuh key (bin publik);
+// tulis butuh X-Master-Key milik admin.
+function getCloudConfig() {
+  try {
+    return JSON.parse(localStorage.getItem(LS_CLOUD)) || {};
+  } catch {
+    return {};
+  }
+}
+
+function saveCloudConfig(cfg) {
+  localStorage.setItem(LS_CLOUD, JSON.stringify(cfg));
+}
+
+function cloudEnabled() {
+  const c = getCloudConfig();
+  return !!(c && c.bin);
+}
+
+function cloudDoc() {
+  return {
+    members: getCustomMembers(),
+    deleted: getDeletedIds(),
+    users: getUsers(),
+  };
+}
+
+function cloudFetch(url, options, timeoutMs = 8000) {
+  return new Promise((resolve, reject) => {
+    const timer = setTimeout(() => reject(new Error("timeout")), timeoutMs);
+    fetch(url, options)
+      .then(async (res) => {
+        if (!res.ok) throw new Error("HTTP " + res.status);
+        const data = await res.json();
+        resolve(data);
+      })
+      .catch(reject)
+      .finally(() => clearTimeout(timer));
+  });
+}
+
+// Unggah seluruh database anggota buatan admin ke bin jsonbin
+async function cloudPush() {
+  const c = getCloudConfig();
+  if (!c.bin || !c.key) return { ok: false, reason: "noconfig" };
+  try {
+    await cloudFetch(CLOUD_API + "/b/" + c.bin, {
+      method: "PUT",
+      headers: {
+        "X-Master-Key": c.key,
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify(cloudDoc()),
+    });
+    return { ok: true };
+  } catch (err) {
+    return { ok: false, reason: "network", error: err };
+  }
+}
+
+// Tarik anggota & akun dari bin jsonbin lalu gabung ke perangkat ini
+async function cloudPull() {
+  const c = getCloudConfig();
+  if (!c.bin) return { ok: false, reason: "noconfig" };
+  let doc;
+  try {
+    const headers = {};
+    if (c.key) headers["X-Master-Key"] = c.key;
+    const res = await cloudFetch(CLOUD_API + "/b/" + c.bin + "/latest", { headers });
+    doc = res && res.record;
+  } catch (err) {
+    return { ok: false, reason: "network", error: err };
+  }
+  if (!doc || !Array.isArray(doc.members)) return { ok: false, reason: "empty" };
+
+  const localMembers = getCustomMembers();
+  const byId = {};
+  localMembers.forEach((m) => (byId[m.id.toLowerCase()] = m));
+  doc.members.forEach((m) => (byId[m.id.toLowerCase()] = m));
+  saveCustomMembers(Object.values(byId));
+
+  const deleted = getDeletedIds();
+  const deletedSet = new Set(deleted.map((id) => id.toLowerCase()));
+  (doc.deleted || []).forEach((id) => deletedSet.add(String(id).toLowerCase()));
+  saveDeletedIds([...deletedSet]);
+
+  // Sinkronkan akun login (xrpl1_users) dengan anggota cloud
+  Object.values(byId).forEach((m) => {
+    if (deletedSet.has(m.id.toLowerCase())) {
+      removeUserForMember(m.id);
+    } else {
+      addCustomMemberToUsers(m);
+    }
+  });
+  const users2 = getUsers();
+  Object.keys(users2).forEach((k) => {
+    if (!users2[k]) return;
+    if (users2[k].fromAdmin && !byId[users2[k].memberId.toLowerCase()]) {
+      delete users2[k];
+    }
+  });
+  saveUsers(users2);
+  return { ok: true };
 }
 
 function getAllAnggota() {
@@ -900,6 +1009,7 @@ function deleteProfile(memberId) {
       if (currentMemberId === memberId) currentMemberId = null;
       showView("anggota");
       toast("Profil dihapus.");
+      cloudPushQuiet();
     },
   });
 }
@@ -1258,6 +1368,7 @@ function renderAdmin() {
   else if (adminCurrentTab === "video") renderAdminMedia("video/");
   else if (adminCurrentTab === "file") renderAdminMedia("file");
   else if (adminCurrentTab === "musik") renderAdminSongs();
+  else if (adminCurrentTab === "sinkronisasi") content.innerHTML = adminSyncHtml();
   initReveal();
 }
 
@@ -1302,6 +1413,118 @@ function adminRingkasanHtml() {
         serta <b>membuat akun</b> bagi anggota (tab Tambah Anggota) dan melihat akun yang sudah dibuat.
       </p>
     </div>`;
+}
+
+// ===== SINKRONISASI CLOUD (jsonbin.io) =====
+function adminSyncHtml() {
+  const c = getCloudConfig();
+  const enabled = cloudEnabled();
+  return `
+    <div class="admin-tab-head reveal">
+      <h2><span class="dot"></span> Sinkronisasi Antar Perangkat</h2>
+      <p>Agar akun yang dibuat di <b>Tambah Anggota</b> bisa langsung login dari HP/PC lain, simpan data anggota ke bin jsonbin.io (gratis).</p>
+    </div>
+    <div class="card reveal">
+      <h2 class="section-title"><span class="dot"></span> Cara Mengaktifkan (sekali saja)</h2>
+      <ol class="sync-steps">
+        <li>Daftar di <a href="https://jsonbin.io" target="_blank" rel="noopener">jsonbin.io</a> (gratis, via email/GitHub).</li>
+        <li>Klik <b>Create Bin</b>, biarkan kosong, pilih <b>Private</b>, lalu <b>Save</b>.</li>
+        <li>Salin <b>Bin ID</b> (dari URL halaman bin) dan <b>X-Master-Key</b> (menu API keys) ke form di bawah.</li>
+        <li>Klik <b>Simpan &amp; Tarik Data</b>, lalu gunakan <b>Unggah ke Cloud</b> setiap kali selesai membuat/menghapus akun.</li>
+      </ol>
+    </div>
+    <div class="card reveal">
+      <h2 class="section-title"><span class="dot"></span> Pengaturan Cloud</h2>
+      <form onsubmit="syncSaveConfig(event)">
+        <div class="form-group">
+          <label for="cloudBin">Bin ID</label>
+          <input type="text" id="cloudBin" class="form-control" placeholder="cth. 65f2a1a2dc74654018a5b1c2" value="${escAttr(c.bin || "")}">
+        </div>
+        <div class="form-group">
+          <label for="cloudKey">X-Master-Key</label>
+          <input type="password" id="cloudKey" class="form-control" placeholder="X-Master-Key jsonbin" value="${escAttr(c.key || "")}">
+          <p class="form-hint">Hanya disimpan di browser ini (localStorage). Jangan dibagikan.</p>
+        </div>
+        <div style="display:flex;gap:.6rem;flex-wrap:wrap;margin-top:.4rem">
+          <button type="submit" class="btn btn-primary">Simpan &amp; Tarik Data</button>
+          <button type="button" class="btn" id="syncPushBtn" onclick="syncPush()">Unggah ke Cloud</button>
+          <button type="button" class="btn btn-danger" onclick="syncReset()">Nonaktifkan</button>
+        </div>
+      </form>
+      <div id="syncStatus" class="sync-status" style="margin-top:1rem">
+        ${enabled
+          ? '<span class="sync-ok">Sinkronisasi aktif (Bin ID: ' + esc(c.bin) + ")</span>"
+          : '<span class="sync-off">Belum aktif. Isi Bin ID &amp; Master Key di atas.</span>'}
+      </div>
+    </div>`;
+}
+
+async function syncSaveConfig(e) {
+  if (e) e.preventDefault();
+  const bin = document.getElementById("cloudBin").value.trim();
+  const key = document.getElementById("cloudKey").value.trim();
+  if (!bin) {
+    syncStatusMsg("Bin ID wajib diisi.", "error");
+    return;
+  }
+  saveCloudConfig({ bin, key });
+  const res = await cloudPull();
+  if (res.ok) {
+    renderAdmin();
+    syncStatusMsg("Konfigurasi tersimpan. Data berhasil ditarik dari cloud!", "ok");
+  } else if (res.reason === "noconfig") {
+    syncStatusMsg("Konfigurasi tersimpan.", "ok");
+  } else {
+    renderAdmin();
+    syncStatusMsg("Tersimpan, tapi gagal menarik data. Cek Bin ID (dan key bila bin private).", "error");
+  }
+}
+
+async function syncPush() {
+  if (!cloudEnabled()) {
+    syncStatusMsg("Simpan Bin ID dulu sebelum mengunggah.", "error");
+    return;
+  }
+  const btn = document.getElementById("syncPushBtn");
+  if (btn) btn.disabled = true;
+  syncStatusMsg("Mengunggah ke cloud...");
+  const res = await cloudPush();
+  if (btn) btn.disabled = false;
+  if (res.ok) syncStatusMsg("Unggah berhasil! Data tersimpan di cloud.", "ok");
+  else if (res.reason === "noconfig") syncStatusMsg("Unggah butuh Bin ID & X-Master-Key.", "error");
+  else syncStatusMsg("Unggah gagal (jaringan atau key salah). Coba lagi.", "error");
+}
+
+function syncReset() {
+  localStorage.removeItem(LS_CLOUD);
+  renderAdmin();
+  toast("Sinkronisasi cloud dinonaktifkan.");
+}
+
+function syncStatusMsg(text, kind) {
+  const el = document.getElementById("syncStatus");
+  if (!el) return;
+  const cls = kind === "ok" ? "sync-ok" : kind === "error" ? "sync-err" : "sync-off";
+  el.innerHTML = '<span class="' + cls + '">' + esc(text) + "</span>";
+}
+
+// Tarik otomatis saat aplikasi dibuka (agar akun dari perangkat lain tersedia)
+async function cloudAutoPull() {
+  if (!cloudEnabled()) return;
+  const res = await cloudPull();
+  if (res.ok) {
+    const s = getSession();
+    showView(s ? "dashboard" : "login");
+  }
+}
+
+// Unggah diam-diam setelah aksi admin mengubah anggota/akun
+async function cloudPushQuiet() {
+  if (!cloudEnabled()) return;
+  const res = await cloudPush();
+  if (!res.ok && res.reason === "network") {
+    toast("Gagal unggah ke cloud. Data tetap tersimpan di perangkat ini.", "error");
+  }
 }
 
 // ===== TAMBAH ANGGOTA (oleh admin) =====
@@ -1467,6 +1690,7 @@ function adminAddMember(e) {
       clearAddForm();
       renderAdmin();
       toast('Anggota "' + name + '" berhasil dibuat! Login: ' + id + " / " + memberPass(member));
+      cloudPushQuiet();
     };
     reader.readAsDataURL(file);
     return;
@@ -1478,6 +1702,7 @@ function adminAddMember(e) {
   clearAddForm();
   renderAdmin();
   toast('Anggota "' + name + '" berhasil dibuat! Login: ' + id + " / " + memberPass(member));
+  cloudPushQuiet();
 }
 
 function adminDeleteMember(memberId) {
@@ -1506,6 +1731,7 @@ function adminDeleteMember(memberId) {
       localStorage.removeItem(LS_OWNER_PREFIX + memberId);
       renderAdmin();
       toast("Anggota dihapus.");
+      cloudPushQuiet();
     },
   });
 }
@@ -1926,8 +2152,9 @@ function addSong() {
 }
 
 // ===== LOGIN & REGISTER =====
-function handleLogin(e) {
+async function handleLogin(e) {
   e.preventDefault();
+  await cloudPull(); // tarik akun terbaru dari cloud sebelum cek login
   const users = getUsers();
   const rawName = document.getElementById("loginName").value.trim();
   const password = document.getElementById("loginPassword").value;
@@ -2083,4 +2310,5 @@ document.addEventListener("DOMContentLoaded", () => {
     saveUsers(users);
   }
   showView(getSession() ? "dashboard" : "login");
+  cloudAutoPull();
 });
