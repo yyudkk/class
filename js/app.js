@@ -610,6 +610,8 @@ function renderStruktur() {
     "Sekretaris 2",
     "Kebersihan 1",
     "Kebersihan 2",
+    "Keamanan 1",
+    "Keamanan 2",
   ];
   grid.innerHTML = "";
   roles.forEach((r) => {
@@ -889,12 +891,7 @@ function deleteProfile(memberId) {
       localStorage.removeItem(LS_SONG_REMOVED_PREFIX + memberId);
       localStorage.removeItem(LS_PROFILE_PREFIX + memberId);
       localStorage.removeItem(LS_OWNER_PREFIX + memberId);
-      const users = getUsers();
-      const key = (member.fullname || member.name).toLowerCase();
-      if (users[key]) {
-        delete users[key];
-        saveUsers(users);
-      }
+      removeUserForMember(memberId);
       const s = getSession();
       if (s && s.memberId === memberId) {
         logout();
@@ -1184,7 +1181,7 @@ function renderDbTable() {
       ? '<span class="badge" style="transform:none">Dibuat Admin</span>'
       : '<span class="badge badge-bawaan" style="transform:none">Bawaan</span>';
     const passCell = isCustom
-      ? `<code class="db-code">${esc(member.id)} / ${esc(member.id + "123")}</code>`
+      ? `<code class="db-code">${esc(member.id)} / ${esc(memberPass(m))}</code>`
       : `<span class="db-noaccount">Belum ada akun</span>`;
     return `
       <div class="db-row">
@@ -1308,6 +1305,51 @@ function adminRingkasanHtml() {
 }
 
 // ===== TAMBAH ANGGOTA (oleh admin) =====
+const ROLE_OPTIONS = [
+  { value: "Anggota", label: "Anggota" },
+  { value: "Ketua Kelas", label: "Ketua" },
+  { value: "Wakil Ketua Kelas", label: "Wakil" },
+  { value: "Sekretaris 1", label: "Sekretaris 1" },
+  { value: "Sekretaris 2", label: "Sekretaris 2" },
+  { value: "Bendahara 1", label: "Bendahara 1" },
+  { value: "Bendahara 2", label: "Bendahara 2" },
+  { value: "Kebersihan 1", label: "Kebersihan 1" },
+  { value: "Kebersihan 2", label: "Kebersihan 2" },
+  { value: "Keamanan 1", label: "Keamanan 1" },
+  { value: "Keamanan 2", label: "Keamanan 2" },
+];
+
+// Masukkan akun buatan admin ke database pengguna (xrpl1_users) agar bisa dipakai login
+function memberPass(member) {
+  return (member && member.pass) || (member && member.id + "123");
+}
+
+function addCustomMemberToUsers(member) {
+  const users = getUsers();
+  const key = member.id.toLowerCase();
+  if (!users[key]) {
+    users[key] = {
+      name: member.name,
+      password: memberPass(member),
+      memberId: member.id,
+      created: member.created || new Date().toISOString(),
+      fromAdmin: true,
+    };
+    saveUsers(users);
+  }
+}
+
+// Hapus entri database pengguna milik anggota (untuk admin & pemilik akun)
+function removeUserForMember(memberId) {
+  const users = getUsers();
+  const keys = Object.keys(users).filter(
+    (k) => k === memberId.toLowerCase() || (users[k] && users[k].memberId === memberId)
+  );
+  if (!keys.length) return;
+  keys.forEach((k) => delete users[k]);
+  saveUsers(users);
+}
+
 function adminAddHtml() {
   return `
     <div class="admin-tab-head reveal">
@@ -1324,6 +1366,11 @@ function adminAddHtml() {
             <p class="song-hint">Tanpa spasi. Password otomatis = ID + "123" (mis. dimas / dimas123).</p>
           </div>
           <div class="form-group">
+            <label for="amPass">Password (opsional)</label>
+            <input type="text" id="amPass" class="form-control" placeholder="Kosongkan untuk otomatis ID + 123">
+            <p class="song-hint">Isi untuk password kustom. Kosongkan agar otomatis pakai ID + "123".</p>
+          </div>
+          <div class="form-group">
             <label for="amName">Nama Panggilan</label>
             <input type="text" id="amName" class="form-control" placeholder="mis. Dimas" required>
           </div>
@@ -1332,15 +1379,23 @@ function adminAddHtml() {
             <input type="text" id="amFullname" class="form-control" placeholder="mis. Dimas Prasetyo" required>
           </div>
           <div class="form-group">
-            <label for="amBirth">Tanggal Lahir</label>
+            <label for="amRole">Jabatan / Role</label>
+            <select id="amRole" class="form-control">
+              ${ROLE_OPTIONS.map(
+                (r) => `<option value="${r.value}" ${r.value === "Anggota" ? "selected" : ""}>${r.label}</option>`
+              ).join("")}
+            </select>
+          </div>
+          <div class="form-group">
+            <label for="amBirth">Tanggal Lahir (opsional)</label>
             <input type="text" id="amBirth" class="form-control" placeholder="mis. 12 Mei 2011">
           </div>
           <div class="form-group">
-            <label for="amHobby">Hobi</label>
+            <label for="amHobby">Hobi (opsional)</label>
             <input type="text" id="amHobby" class="form-control" placeholder="mis. Membaca">
           </div>
           <div class="form-group">
-            <label for="amMotto">Bio / Motto</label>
+            <label for="amMotto">Bio / Motto Hidup (opsional)</label>
             <textarea id="amMotto" class="form-control" rows="2" placeholder="Tulis motto hidup..."></textarea>
           </div>
           <div class="form-group">
@@ -1356,10 +1411,12 @@ function adminAddHtml() {
 }
 
 function clearAddForm() {
-  ["amId", "amName", "amFullname", "amBirth", "amHobby", "amMotto", "amPhoto"].forEach((id) => {
+  ["amId", "amPass", "amName", "amFullname", "amBirth", "amHobby", "amMotto", "amPhoto"].forEach((id) => {
     const el = document.getElementById(id);
     if (el) el.value = "";
   });
+  const roleEl = document.getElementById("amRole");
+  if (roleEl) roleEl.value = "Anggota";
 }
 
 function adminAddMember(e) {
@@ -1367,9 +1424,11 @@ function adminAddMember(e) {
   const id = document.getElementById("amId").value.trim();
   const name = document.getElementById("amName").value.trim();
   const fullname = document.getElementById("amFullname").value.trim();
+  const role = (document.getElementById("amRole") ? document.getElementById("amRole").value : "") || "Anggota";
   const birth = document.getElementById("amBirth").value.trim();
   const hobby = document.getElementById("amHobby").value.trim();
   const motto = document.getElementById("amMotto").value.trim();
+  const passInput = document.getElementById("amPass") ? document.getElementById("amPass").value.trim() : "";
   if (!id || !name || !fullname) {
     toast("ID, nama panggilan, dan nama lengkap wajib diisi.", "error");
     return;
@@ -1378,12 +1437,20 @@ function adminAddMember(e) {
     toast("ID tidak boleh mengandung spasi.", "error");
     return;
   }
+  if (passInput && /\s/.test(passInput)) {
+    toast("Password tidak boleh mengandung spasi.", "error");
+    return;
+  }
   const existing = getAllAnggota().some((m) => m.id.toLowerCase() === id.toLowerCase());
   if (existing) {
     toast('ID "' + id + '" sudah dipakai anggota lain.', "error");
     return;
   }
-  const member = { id, name, fullname, gender: "", birth, hobby, motto, role: "Anggota", sosmed: {}, songs: [], created: new Date().toISOString() };
+  const member = {
+    id, name, fullname, gender: "", birth, hobby, motto, role,
+    sosmed: {}, songs: [], created: new Date().toISOString(),
+    pass: passInput || "",
+  };
   const file = document.getElementById("amPhoto").files[0];
   if (file) {
     if (file.size > 2 * 1024 * 1024) {
@@ -1396,9 +1463,10 @@ function adminAddMember(e) {
       const custom = getCustomMembers();
       custom.push(member);
       saveCustomMembers(custom);
+      addCustomMemberToUsers(member);
       clearAddForm();
       renderAdmin();
-      toast('Anggota "' + name + '" berhasil dibuat! Login: ' + id + " / " + id + "123");
+      toast('Anggota "' + name + '" berhasil dibuat! Login: ' + id + " / " + memberPass(member));
     };
     reader.readAsDataURL(file);
     return;
@@ -1406,9 +1474,10 @@ function adminAddMember(e) {
   const custom = getCustomMembers();
   custom.push(member);
   saveCustomMembers(custom);
+  addCustomMemberToUsers(member);
   clearAddForm();
   renderAdmin();
-  toast('Anggota "' + name + '" berhasil dibuat! Login: ' + id + " / " + id + "123");
+  toast('Anggota "' + name + '" berhasil dibuat! Login: ' + id + " / " + memberPass(member));
 }
 
 function adminDeleteMember(memberId) {
@@ -1428,6 +1497,7 @@ function adminDeleteMember(memberId) {
       if (isCustom) {
         saveCustomMembers(getCustomMembers().filter((m) => m.id !== memberId));
       }
+      removeUserForMember(memberId);
       localStorage.removeItem(LS_MSG_PREFIX + memberId);
       localStorage.removeItem(LS_MEDIA_PREFIX + memberId);
       localStorage.removeItem(LS_SONG_PREFIX + memberId);
@@ -1872,7 +1942,7 @@ function handleLogin(e) {
       m.fullname.toLowerCase() === lower
   );
   if (member) {
-    if (password.toLowerCase() === (member.id + "123").toLowerCase()) {
+    if (password.toLowerCase() === memberPass(member).toLowerCase()) {
       setSession({ name: member.name, memberId: member.id, owner: true });
       showView("dashboard");
       toast("Halo " + member.name + "! Kamu masuk sebagai pemilik akun.");
@@ -1880,7 +1950,7 @@ function handleLogin(e) {
     }
     alertBox.className = "alert error";
     alertBox.textContent =
-      'Password salah untuk akun "' + member.name + '". Gunakan password ID-nya (mis. ' + member.id + "123).";
+      'Password salah untuk akun "' + member.name + '". Gunakan password yang dibuat admin.';
     return;
   }
 
